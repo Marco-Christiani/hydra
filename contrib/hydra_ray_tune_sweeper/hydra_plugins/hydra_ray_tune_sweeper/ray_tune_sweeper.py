@@ -142,6 +142,17 @@ class RayTuneSweeper(Sweeper):
         assert self.hydra_context is not None
         assert self.task_function is not None
 
+        # Call setup_globals() like other launchers do - this ensures resolvers are registered
+        setup_globals()
+
+        # Debug: Print the config structure
+        log.debug(f"Config keys: {list(self.config.keys()) if self.config else 'None'}")
+        if "hydra" in self.config:
+            log.debug(f"Hydra config keys: {list(self.config.hydra.keys())}")
+            if "sweep" in self.config.hydra:
+                log.debug(f"Sweep config keys: {list(self.config.hydra.sweep.keys())}")
+                log.debug(f"Sweep dir value: {self.config.hydra.sweep.dir}")
+
         # Parse command line arguments and plugin config
         params_conf = self._parse_config()
         params_conf.extend(arguments)
@@ -160,8 +171,16 @@ class RayTuneSweeper(Sweeper):
             return
 
         # Follow standard Hydra sweeper pattern - create sweep directory immediately
-        # Use str() to convert any interpolated values
-        sweep_dir = Path(str(self.config.hydra.sweep.dir))
+        # Use the same pattern as basic_launcher: extract value first, then convert to Path
+        sweep_dir_value = self.config.hydra.sweep.dir
+        log.debug(f"Sweep dir value before Path conversion: {sweep_dir_value}")
+
+        if sweep_dir_value is None:
+            log.error("hydra.sweep.dir is None - this suggests the config wasn't properly set up")
+            log.error(f"Full config: {OmegaConf.to_yaml(self.config)}")
+            raise ValueError("hydra.sweep.dir is None")
+
+        sweep_dir = Path(str(sweep_dir_value))
         sweep_dir.mkdir(parents=True, exist_ok=True)
 
         # Save sweep run config like other sweepers do
@@ -187,10 +206,7 @@ class RayTuneSweeper(Sweeper):
 
         # Use the sweep directory that we just created and verified
         # But handle the case where self.local_dir is preferred
-        if self.local_dir:
-            storage_path = self.local_dir
-        else:
-            storage_path = str(sweep_dir.absolute())
+        storage_path = self.local_dir or str(sweep_dir.absolute())
 
         # Configure and run Ray Tune experiment
         run_config = tune.RunConfig(
@@ -341,17 +357,14 @@ class RayTuneSweeper(Sweeper):
             if self.metric and self.metric in best_metrics:
                 results_to_serialize["best_value"] = best_metrics[self.metric]
 
-            # Save results
-            results_path = Path(str(self.config.hydra.sweep.dir)) / "optimization_results.yaml"
-            log.error(f"Saving results to {results_path=!s}")
-            OmegaConf.save(OmegaConf.create(results_to_serialize), results_path)
+            # Use the exact same pattern as Optuna sweeper
+            OmegaConf.save(
+                OmegaConf.create(results_to_serialize),
+                f"{self.config.hydra.sweep.dir}/optimization_results.yaml",
+            )
 
             log.info(f"Best config: {best_config}")
-            log.info(f"Results saved to: {results_path}")
+            log.info(f"Results saved to: {self.config.hydra.sweep.dir}/optimization_results.yaml")
 
         except Exception as e:
             log.error(f"Failed to save results: {e}")
-
-    def validate_batch_is_legal(self, batch) -> None:
-        """Validate batch compatibility using parent implementation."""
-        super().validate_batch_is_legal(batch)
