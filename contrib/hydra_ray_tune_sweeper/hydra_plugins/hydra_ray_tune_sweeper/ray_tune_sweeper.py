@@ -145,13 +145,7 @@ class RayTuneSweeper(Sweeper):
         # Call setup_globals() like other launchers do - this ensures resolvers are registered
         setup_globals()
 
-        # Debug: Print the config structure
-        log.debug(f"Config keys: {list(self.config.keys()) if self.config else 'None'}")
-        if "hydra" in self.config:
-            log.debug(f"Hydra config keys: {list(self.config.hydra.keys())}")
-            if "sweep" in self.config.hydra:
-                log.debug(f"Sweep config keys: {list(self.config.hydra.sweep.keys())}")
-                log.debug(f"Sweep dir value: {self.config.hydra.sweep.dir}")
+        log.debug(f"Sweep dir from config: {self.config.hydra.sweep.dir}")
 
         # Parse command line arguments and plugin config
         params_conf = self._parse_config()
@@ -170,18 +164,31 @@ class RayTuneSweeper(Sweeper):
             log.warning("No sweep parameters found - nothing to optimize")
             return
 
-        # Follow standard Hydra sweeper pattern - create sweep directory immediately
-        # Use the same pattern as basic_launcher: extract value first, then convert to Path
         sweep_dir_value = self.config.hydra.sweep.dir
-        log.debug(f"Sweep dir value before Path conversion: {sweep_dir_value}")
-
-        if sweep_dir_value is None:
-            log.error("hydra.sweep.dir is None - this suggests the config wasn't properly set up")
-            log.error(f"Full config: {OmegaConf.to_yaml(self.config)}")
-            raise ValueError("hydra.sweep.dir is None")
+        
+        # Handle the case where sweep.dir is None or "None" string by checking for override values
+        if sweep_dir_value is None or str(sweep_dir_value) == "None":
+            log.debug("sweep.dir is None or 'None' string, checking overrides...")
+            
+            # Check if there's a sweep directory in the overrides
+            for override in self.config.hydra.overrides.hydra:
+                if override.startswith("hydra.sweep.dir=") and not override.endswith("=None"):
+                    # Extract the directory path from the override
+                    sweep_dir_value = override.split("=", 1)[1]
+                    log.debug(f"Found sweep dir in overrides: {sweep_dir_value}")
+                    break
+            
+            if sweep_dir_value is None or str(sweep_dir_value) == "None":
+                # Fall back to a default directory
+                sweep_dir_value = "./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}"
+                log.warning(f"hydra.sweep.dir is None, using default: {sweep_dir_value}")
 
         sweep_dir = Path(str(sweep_dir_value))
         sweep_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Update the config to store the actual sweep directory path (for consistency)
+        with open_dict(self.config):
+            self.config.hydra.sweep.dir = str(sweep_dir)
 
         # Save sweep run config like other sweepers do
         OmegaConf.save(self.config, sweep_dir / "multirun.yaml")
