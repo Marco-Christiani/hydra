@@ -18,7 +18,6 @@ from hydra.core.utils import JobReturn, JobStatus, run_job, setup_globals
 from hydra.errors import HydraException
 from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 from ray import tune
 from ray.tune.schedulers import TrialScheduler
@@ -45,8 +44,8 @@ class RayTuneSweeper(Sweeper):
         num_samples: int = 10,
         max_concurrent_trials: Optional[int] = None,
         timeout: Optional[float] = None,
-        search_alg: Optional[Dict[str, Any]] = None,
-        scheduler: Optional[Dict[str, Any]] = None,
+        search_alg: Optional[SearchAlgorithm] = None,
+        scheduler: Optional[TrialScheduler] = None,
         ray_config: Optional[Dict[str, Any]] = None,
         resume: Union[bool, str] = False,
         max_failures: int = 0,
@@ -65,8 +64,8 @@ class RayTuneSweeper(Sweeper):
         self.num_samples = num_samples
         self.max_concurrent_trials = max_concurrent_trials
         self.timeout = timeout
-        self.search_alg_config = search_alg
-        self.scheduler_config = scheduler
+        self.search_alg = search_alg
+        self.scheduler = scheduler
         self.ray_config = ray_config or {}
         self.resume = resume
         self.max_failures = max_failures
@@ -172,8 +171,8 @@ class RayTuneSweeper(Sweeper):
         log.info(f"Sweep output dir: {sweep_dir}")
 
         # Set up Ray Tune components
-        search_alg = self._create_search_algorithm()
-        scheduler = self._create_scheduler()
+        search_alg = self.search_alg
+        scheduler = self.scheduler
 
         log.info(f"Starting Ray Tune optimization with {self.num_samples} trials")
         log.info(f"Search space: {search_space}")
@@ -306,30 +305,6 @@ class RayTuneSweeper(Sweeper):
                 log.warning(f"Cannot convert return value to metric: {return_value}")
                 return {"objective": 0.0}
 
-    def _create_search_algorithm(self) -> Optional[SearchAlgorithm]:
-        """Create search algorithm from configuration."""
-        if self.search_alg_config is None:
-            return None
-
-        try:
-            search_alg = instantiate(self.search_alg_config)
-            return search_alg
-        except Exception as e:
-            log.error(f"Failed to create search algorithm: {e}")
-            return None
-
-    def _create_scheduler(self) -> Optional[TrialScheduler]:
-        """Create trial scheduler from configuration."""
-        if self.scheduler_config is None:
-            return None
-
-        try:
-            scheduler = instantiate(self.scheduler_config)
-            return scheduler
-        except Exception as e:
-            log.error(f"Failed to create scheduler: {e}")
-            return None
-
     def _parse_config(self) -> List[str]:
         """Parse sweeper parameter configuration."""
         params_conf = []
@@ -368,6 +343,7 @@ class RayTuneSweeper(Sweeper):
 
             # Save results
             results_path = Path(str(self.config.hydra.sweep.dir)) / "optimization_results.yaml"
+            log.error(f"Saving results to {results_path=!s}")
             OmegaConf.save(OmegaConf.create(results_to_serialize), results_path)
 
             log.info(f"Best config: {best_config}")
