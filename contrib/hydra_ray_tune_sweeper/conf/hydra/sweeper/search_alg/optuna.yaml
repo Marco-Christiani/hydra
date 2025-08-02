@@ -1,0 +1,8 @@
+# hydra_ray_tune_sweeper/conf/hydra/sweeper/search_alg/optuna.yaml
+# @package hydra.sweeper.search_alg
+_target_: ray.tune.search.optuna.OptunaSearch
+metric: null
+mode: "min"
+sampler_class: "optuna.samplers.TPESampler"
+sampler_kwargs: {}
+

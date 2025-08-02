@@ -1,0 +1,9 @@
+# hydra_ray_tune_sweeper/conf/hydra/sweeper/scheduler/asha.yaml
+# @package hydra.sweeper.scheduler
+_target_: ray.tune.schedulers.ASHAScheduler
+metric: null
+mode: "min"
+max_t: 100
+grace_period: 1
+reduction_factor: 2
+brackets: 1

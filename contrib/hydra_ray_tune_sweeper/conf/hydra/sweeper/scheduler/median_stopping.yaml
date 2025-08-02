@@ -1,0 +1,10 @@
+# hydra_ray_tune_sweeper/conf/hydra/sweeper/scheduler/median_stopping.yaml
+# @package hydra.sweeper.scheduler
+_target_: ray.tune.schedulers.MedianStoppingRule
+metric: null
+mode: "min"
+time_attr: "training_iteration"
+grace_period: 1
+min_samples_required: 3
+min_time_slice: 0
+

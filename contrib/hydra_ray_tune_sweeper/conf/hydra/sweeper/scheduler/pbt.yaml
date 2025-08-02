@@ -1,0 +1,12 @@
+# hydra_ray_tune_sweeper/conf/hydra/sweeper/scheduler/pbt.yaml
+# @package hydra.sweeper.scheduler
+_target_: ray.tune.schedulers.PopulationBasedTraining
+metric: null
+mode: "min"
+time_attr: "training_iteration"
+perturbation_interval: 60
+burn_in_period: 0
+hyperparam_mutations: {}
+quantile_fraction: 0.25
+resample_probability: 0.25
+custom_explore_fn: null

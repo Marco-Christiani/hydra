@@ -1,0 +1,8 @@
+# hydra_ray_tune_sweeper/conf/hydra/sweeper/search_alg/hyperopt.yaml
+# @package hydra.sweeper.search_alg
+_target_: ray.tune.search.hyperopt.HyperOptSearch
+metric: null
+mode: "min"
+points_to_evaluate: null
+n_initial_points: 20
+random_state_seed: null

@@ -1,0 +1,32 @@
+# hydra_ray_tune_sweeper/conf/hydra/sweeper/ray_tune.yaml
+# Default Ray Tune sweeper configuration
+defaults:
+  - search_alg: random
+  - scheduler: null
+
+num_samples: 10
+max_concurrent_trials: null
+timeout: null
+
+ray_config: {}
+
+resume: false
+checkpoint_freq: 0
+checkpoint_at_end: false
+
+max_failures: 0
+fail_fast: false
+
+resources_per_trial:
+  cpu: 1
+  gpu: 0
+
+metric: null
+mode: "min"
+
+local_dir: null
+experiment_name: null
+
+params: {}
+stop: null
+
