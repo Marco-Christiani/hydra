@@ -1,18 +1,25 @@
 # hydra_ray_tune_sweeper/hydra_plugins/hydra_ray_tune_sweeper/ray_tune_sweeper.py
+"""Ray Tune sweeper implementation.
+
+This module provides the main RayTuneSweeper class that integrates
+Ray Tune's optimization algorithms with Hydra's configuration system.
+"""
 
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import ray
+from hydra.core.hydra_config import HydraConfig
 from hydra.core.override_parser.overrides_parser import OverridesParser
 from hydra.core.plugins import Plugins
-from hydra.core.utils import JobReturn, JobStatus
+from hydra.core.singleton import Singleton
+from hydra.core.utils import JobReturn, JobStatus, run_job, setup_globals
+from hydra.errors import HydraException
 from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
 from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from ray import tune
 from ray.tune.schedulers import TrialScheduler
 from ray.tune.search import SearchAlgorithm
@@ -23,13 +30,14 @@ log = logging.getLogger(__name__)
 
 
 class RayTuneSweeper(Sweeper):
-    """Ray Tune sweeper for Hydra applications.
+    """Ray Tune based hyperparameter sweeper for Hydra.
 
     This sweeper integrates Ray Tune's optimization algorithms and distributed
     execution capabilities with Hydra's configuration management system.
 
-    Unlike other Hydra sweepers, this plugin combines both sweeping strategy
-    and execution management, making it incompatible with other launchers.
+    IMPORTANT: This sweeper manages its own execution and is incompatible with
+    other Hydra launchers (ray, submitit, etc.). It only works with the basic
+    launcher since Ray Tune handles the distributed execution internally.
     """
 
     def __init__(
@@ -89,7 +97,11 @@ class RayTuneSweeper(Sweeper):
         self.hydra_context = hydra_context
         self.task_function = task_function
 
-        # Use Hydra's standard launcher instantiation pattern
+        # Validate that we're using a compatible launcher
+        self._validate_plugin_compatibility(config)
+
+        # Since Ray Tune manages execution, we don't need a launcher
+        # but we store it for potential future compatibility
         self.launcher = Plugins.instance().instantiate_launcher(
             config=config, hydra_context=hydra_context, task_function=task_function
         )
@@ -99,12 +111,37 @@ class RayTuneSweeper(Sweeper):
             log.info("Initializing Ray for optimization")
             ray.init(**self.ray_config)
 
+    def _validate_plugin_compatibility(self, config: DictConfig) -> None:
+        """Validate that the launcher is compatible with Ray Tune sweeper.
+
+        Ray Tune manages its own distributed execution, so it's incompatible
+        with other launchers like ray, submitit, joblib, etc.
+        """
+        launcher_config = config.get("hydra", {}).get("launcher", None)
+
+        if launcher_config is None:
+            return  # No launcher specified, use default
+
+        if hasattr(launcher_config, "_target_"):
+            launcher_target = launcher_config._target_
+
+            # Only basic launcher is compatible
+            compatible_launchers = [
+                "hydra._internal.core_plugins.basic_launcher.BasicLauncher",
+            ]
+
+            if launcher_target not in compatible_launchers:
+                raise HydraException(
+                    f"Ray Tune sweeper is incompatible with launcher '{launcher_target}'.\n"
+                    f"Ray Tune manages its own distributed execution and only works with the basic launcher.\n"
+                    f"Please remove 'hydra/launcher' from your config or use 'hydra/launcher=basic'."
+                )
+
     def sweep(self, arguments: List[str]) -> None:
         """Execute hyperparameter sweep using Ray Tune for optimization strategy."""
         assert self.config is not None
         assert self.hydra_context is not None
         assert self.task_function is not None
-        assert self.launcher is not None
 
         # Parse command line arguments and plugin config
         params_conf = self._parse_config()
@@ -123,22 +160,9 @@ class RayTuneSweeper(Sweeper):
             log.warning("No sweep parameters found - nothing to optimize")
             return
 
-        # Debug the config state before using it
-        log.info(f"Raw config.hydra.sweep.dir: {repr(self.config.hydra.sweep.dir)}")
-        log.info(f"Type of config.hydra.sweep.dir: {type(self.config.hydra.sweep.dir)}")
-        log.info(f"self.local_dir: {repr(self.local_dir)}")
-
         # Follow standard Hydra sweeper pattern - create sweep directory immediately
-        sweep_dir_raw = self.config.hydra.sweep.dir
-        log.info(f"Before str() conversion: {repr(sweep_dir_raw)}")
-
-        sweep_dir_str = str(sweep_dir_raw)
-        log.info(f"After str() conversion: {repr(sweep_dir_str)}")
-
-        sweep_dir = Path(sweep_dir_str)
-        log.info(f"Path object: {repr(sweep_dir)}")
-        log.info(f"Absolute path: {repr(sweep_dir.absolute())}")
-
+        # Use str() to convert any interpolated values
+        sweep_dir = Path(str(self.config.hydra.sweep.dir))
         sweep_dir.mkdir(parents=True, exist_ok=True)
 
         # Save sweep run config like other sweepers do
@@ -154,10 +178,13 @@ class RayTuneSweeper(Sweeper):
         log.info(f"Starting Ray Tune optimization with {self.num_samples} trials")
         log.info(f"Search space: {search_space}")
 
+        # Track job index for proper hydra.job.num assignment
+        self._job_idx = 0
+
         # Use Ray Tune's built-in function API with Hydra task execution
         def objective(config: Dict[str, Any]) -> Dict[str, Any]:
             """Objective function that runs Hydra task with given config."""
-            return self._run_hydra_task(config)
+            return self._run_hydra_task_directly(config)
 
         # Use the sweep directory that we just created and verified
         # But handle the case where self.local_dir is preferred
@@ -165,36 +192,8 @@ class RayTuneSweeper(Sweeper):
             storage_path = self.local_dir
         else:
             storage_path = str(sweep_dir.absolute())
-        log.info(f"Final storage_path being passed to Ray Tune: {repr(storage_path)}")
-
-        # Additional debugging - let's also check what self.config looks like
-        log.info("=== DEBUGGING CONFIG STATE ===")
-        log.info(f"self.config type: {type(self.config)}")
-        log.info(f"self.config.hydra type: {type(self.config.hydra)}")
-        log.info(f"self.config.hydra.sweep type: {type(self.config.hydra.sweep)}")
-
-        # Try to serialize parts of the config to see what's resolved
-        try:
-            sweep_config = OmegaConf.to_container(self.config.hydra.sweep, resolve=True)
-            log.info(f"Resolved sweep config: {sweep_config}")
-        except Exception as e:
-            log.error(f"Failed to resolve sweep config: {e}")
-
-        try:
-            hydra_config = OmegaConf.to_container(self.config.hydra, resolve=True)
-            log.info(
-                f"Resolved hydra config keys: {list(hydra_config.keys()) if isinstance(hydra_config, dict) else 'Not a dict'}"
-            )
-        except Exception as e:
-            log.error(f"Failed to resolve hydra config: {e}")
-        log.info("=== END DEBUGGING ===")
 
         # Configure and run Ray Tune experiment
-        log.info("=== CREATING RAY TUNE TUNER ===")
-        log.info(f"storage_path: {repr(storage_path)}")
-        log.info(f"experiment_name: {repr(self.experiment_name)}")
-        log.info(f"stop: {repr(self.stop)}")
-
         run_config = tune.RunConfig(
             name=self.experiment_name or "hydra_ray_tune_sweep",
             storage_path=storage_path,
@@ -204,7 +203,6 @@ class RayTuneSweeper(Sweeper):
             ),
             stop=self.stop,
         )
-        log.info(f"Created RunConfig: {run_config}")
 
         tune_config = tune.TuneConfig(
             num_samples=self.num_samples,
@@ -215,17 +213,13 @@ class RayTuneSweeper(Sweeper):
             metric=self.metric,
             mode=self.mode,
         )
-        log.info(f"Created TuneConfig: {tune_config}")
 
-        log.info("About to create Tuner...")
         tuner = tune.Tuner(
             objective,
             param_space=search_space,
             tune_config=tune_config,
             run_config=run_config,
         )
-        log.info("Tuner created successfully!")
-        log.info("=== END TUNER CREATION ===")
 
         try:
             results = tuner.fit()
@@ -234,31 +228,62 @@ class RayTuneSweeper(Sweeper):
             log.error(f"Ray Tune experiment failed: {e}")
             raise
 
-    def _run_hydra_task(self, tune_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Run Hydra task with Ray Tune configuration.
+    def _run_hydra_task_directly(self, tune_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Run Hydra task directly without using launcher.
 
-        This follows the pattern used by other Hydra sweepers - generate
-        overrides and use the launcher to execute jobs.
+        Since Ray Tune manages the distributed execution, we bypass the launcher
+        and run the task directly in the Ray worker process.
         """
+        # Setup globals for Hydra
+        setup_globals()
+
         # Convert Ray Tune config to Hydra overrides
-        # Use + prefix to add new parameters that might not exist in base config
         overrides = [f"+{k}={v}" for k, v in tune_config.items()]
 
-        # Use launcher to run single job (like BasicSweeper does)
-        job_returns = self.launcher.launch([overrides], initial_job_idx=0)
+        # Load sweep configuration with overrides
+        sweep_config = self.hydra_context.config_loader.load_sweep_config(self.config, overrides)
 
-        if not job_returns:
-            raise RuntimeError("No job results returned")
+        # Set job metadata
+        with open_dict(sweep_config):
+            sweep_config.hydra.job.id = f"ray_tune_{self._job_idx}"
+            sweep_config.hydra.job.num = self._job_idx
 
-        job_return = job_returns[0]
+            # Set output directory for this trial
+            trial_dir = Path(str(self.config.hydra.sweep.dir)) / f"{self._job_idx}"
+            sweep_config.hydra.runtime.output_dir = str(trial_dir)
 
-        # Handle job failure
-        if job_return.status == JobStatus.FAILED:
-            # Access return_value to trigger exception propagation
-            _ = job_return.return_value
+        # Set singleton state for this trial
+        Singleton.set_state(Singleton.get_state())
 
-        # Extract metrics from return value
-        return self._extract_metrics(job_return.return_value)
+        # Set Hydra config
+        HydraConfig.instance().set_config(sweep_config)
+
+        # Increment job index for next trial
+        self._job_idx += 1
+
+        try:
+            # Run the task function directly
+            ret = run_job(
+                hydra_context=self.hydra_context,
+                task_function=self.task_function,
+                config=sweep_config,
+                job_dir_key="hydra.runtime.output_dir",
+                job_subdir_key=None,
+            )
+
+            # Handle job failure
+            if ret.status == JobStatus.FAILED:
+                if isinstance(ret.return_value, Exception):
+                    raise ret.return_value
+                else:
+                    raise RuntimeError(f"Task failed with return value: {ret.return_value}")
+
+            # Extract metrics from return value
+            return self._extract_metrics(ret.return_value)
+
+        except Exception as e:
+            log.error(f"Trial {self._job_idx - 1} failed with error: {e}")
+            raise
 
     def _extract_metrics(self, return_value: Any) -> Dict[str, float]:
         """Extract metrics from task return value for Ray Tune."""
@@ -342,7 +367,7 @@ class RayTuneSweeper(Sweeper):
                 results_to_serialize["best_value"] = best_metrics[self.metric]
 
             # Save results
-            results_path = Path(self.config.hydra.sweep.dir) / "optimization_results.yaml"
+            results_path = Path(str(self.config.hydra.sweep.dir)) / "optimization_results.yaml"
             OmegaConf.save(OmegaConf.create(results_to_serialize), results_path)
 
             log.info(f"Best config: {best_config}")
