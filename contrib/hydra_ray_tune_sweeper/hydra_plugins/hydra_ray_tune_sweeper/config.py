@@ -1,4 +1,4 @@
-# hydra_ray_tune_sweeper/config.py
+# hydra_ray_tune_sweeper/hydra_plugins/hydra_ray_tune_sweeper/config.py
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
