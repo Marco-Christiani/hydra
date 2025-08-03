@@ -1,0 +1,14 @@
+defaults:
+  - override hydra/sweeper: ray_tune
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    num_samples: 100
+    # metric: objective
+    mode: min
+    params:
+      x: interval(0,4)
+      y: interval(0,2)
+x: ???
+y: ???

@@ -145,6 +145,7 @@ class RayTuneSweeper(Sweeper):
         # Call setup_globals() like other launchers do - this ensures resolvers are registered
         setup_globals()
 
+        # Debug: Print minimal config info for troubleshooting
         log.debug(f"Sweep dir from config: {self.config.hydra.sweep.dir}")
 
         # Parse command line arguments and plugin config
@@ -164,31 +165,27 @@ class RayTuneSweeper(Sweeper):
             log.warning("No sweep parameters found - nothing to optimize")
             return
 
+        # Handle edge case where config.hydra.sweep.dir might not be set properly
+        # This can happen in testing scenarios with complex override configurations
         sweep_dir_value = self.config.hydra.sweep.dir
-        
-        # Handle the case where sweep.dir is None or "None" string by checking for override values
         if sweep_dir_value is None or str(sweep_dir_value) == "None":
-            log.debug("sweep.dir is None or 'None' string, checking overrides...")
-            
             # Check if there's a sweep directory in the overrides
             for override in self.config.hydra.overrides.hydra:
                 if override.startswith("hydra.sweep.dir=") and not override.endswith("=None"):
                     # Extract the directory path from the override
                     sweep_dir_value = override.split("=", 1)[1]
                     log.debug(f"Found sweep dir in overrides: {sweep_dir_value}")
-                    break
-            
-            if sweep_dir_value is None or str(sweep_dir_value) == "None":
-                # Fall back to a default directory
+
+            if sweep_dir_value is None:
+                # Fallback to default directory structure
                 sweep_dir_value = "./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}"
                 log.warning(f"hydra.sweep.dir is None, using default: {sweep_dir_value}")
 
         sweep_dir = Path(str(sweep_dir_value))
         sweep_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Update the config to store the actual sweep directory path (for consistency)
-        with open_dict(self.config):
-            self.config.hydra.sweep.dir = str(sweep_dir)
+
+        # Store the corrected sweep directory for use in _save_results
+        self._resolved_sweep_dir = sweep_dir
 
         # Save sweep run config like other sweepers do
         OmegaConf.save(self.config, sweep_dir / "multirun.yaml")
@@ -260,7 +257,7 @@ class RayTuneSweeper(Sweeper):
         setup_globals()
 
         # Convert Ray Tune config to Hydra overrides
-        overrides = [f"+{k}={v}" for k, v in tune_config.items()]
+        overrides = [f"{k!s}={v}" for k, v in tune_config.items()]
 
         # Load sweep configuration with overrides
         sweep_config = self.hydra_context.config_loader.load_sweep_config(self.config, overrides)
@@ -353,7 +350,6 @@ class RayTuneSweeper(Sweeper):
                     log.warning("No results found")
                     return
 
-            # Prepare results for serialization (following Optuna sweeper pattern)
             results_to_serialize = {
                 "name": "ray_tune",
                 "best_config": best_config,
@@ -365,13 +361,15 @@ class RayTuneSweeper(Sweeper):
                 results_to_serialize["best_value"] = best_metrics[self.metric]
 
             # Use the exact same pattern as Optuna sweeper
+            # Use the resolved sweep directory instead of the potentially incorrect config value
+            results_file = self._resolved_sweep_dir / "optimization_results.yaml"
             OmegaConf.save(
                 OmegaConf.create(results_to_serialize),
-                f"{self.config.hydra.sweep.dir}/optimization_results.yaml",
+                results_file,
             )
 
             log.info(f"Best config: {best_config}")
-            log.info(f"Results saved to: {self.config.hydra.sweep.dir}/optimization_results.yaml")
+            log.info(f"Results saved to: {results_file}")
 
         except Exception as e:
             log.error(f"Failed to save results: {e}")

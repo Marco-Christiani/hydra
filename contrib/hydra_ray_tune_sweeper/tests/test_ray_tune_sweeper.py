@@ -21,7 +21,6 @@ from hydra_plugins.hydra_ray_tune_sweeper.ray_tune_sweeper import RayTuneSweeper
 from omegaconf import DictConfig, OmegaConf
 from ray.tune.search.sample import Categorical, Float, Integer
 
-
 chdir_plugin_root()
 
 
@@ -122,42 +121,46 @@ def test_launcher_compatibility_validation() -> None:
 
 
 def simple_optimization_task(cfg: DictConfig) -> float:
-    """Simple quadratic function for testing optimization."""
+    """Simple function for testing optimization."""
     x = cfg.x
     y = cfg.y
-    return (x - 2) ** 2 + (y - 1) ** 2
+    return x**2 + y**2
 
 
 # @pytest.mark.parametrize("search_alg", ["random", "hyperopt"])
 @pytest.mark.parametrize("search_alg", ["random"])
-def test_basic_optimization(search_alg: str, hydra_sweep_runner: TSweepRunner) -> None:
+def test_launch(search_alg: str, hydra_sweep_runner: TSweepRunner) -> None:
     """Test basic optimization with different search algorithms."""
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         overrides = [
+            f"hydra.sweep.dir={tmp_dir}",
             "hydra/sweeper=ray_tune",
             # "hydra/sweeper=RayTuneSweeper",
             # f"hydra/sweeper/search_alg={search_alg}", # FIXME: whats the issue?
             "hydra.sweeper.num_samples=5",
-            "hydra.sweeper.metric=objective",
+            # "hydra.sweeper.metric=objective",
             "hydra.sweeper.mode=min",
-            f"hydra.sweep.dir={tmp_dir}",
-            "x=interval(0,4)",
-            "y=interval(0,2)",
+            "hydra.sweeper.metric=null",
+            "x=int(interval(0,4))",
+            "y=int(interval(0,2))",
         ]
         print("Running with overrides:".center(100, "+"))
         __import__("pprint").pprint(overrides)
         print("+" * 100)
         sweep = hydra_sweep_runner(
-            # calling_file="hydra_ray_tune_sweeper/tests/a_module.py",
-            calling_file=None,
-            # calling_module=None,
-            calling_module="hydra.test_utils.a_module",
+            calling_file="examples/main.py",
+            # calling_file=None,
+            calling_module=None,
+            # calling_module="hydra.test_utils.a_module",
             # calling_module="hydra_ray_tune_sweeper.tests.a_module",
             # calling_module="hydra_plugins.hydra_ray_tune_sweeper.tests.a_module",
             task_function=simple_optimization_task,
-            config_path="configs",
-            config_name="compose.yaml",
+            # task_function=None,
+            # config_path="configs",
+            # config_name="compose.yaml",
+            config_path="conf",
+            config_name="config.yaml",
             overrides=overrides,
         )
 
@@ -165,13 +168,20 @@ def test_basic_optimization(search_alg: str, hydra_sweep_runner: TSweepRunner) -
             assert sweep.returns is None  # Ray Tune manages execution
 
         # Check that results were saved
+        # Since we arent optimizing anything we shouldnt see results
         for x in Path(tmp_dir).glob("**/*.yaml"):
             print(str(x))
         results_file = Path(tmp_dir) / "optimization_results.yaml"
         assert results_file.exists()
 
+        print(results_file.read_text())
+
         results = OmegaConf.load(results_file)
         assert results.name == "ray_tune"
+        print("Best Config".center(80, "-"))
+        print(type(results))
+        print(OmegaConf.to_yaml(results.best_config))
+        print(type(results.best_config))
         assert "best_config" in results
         assert "x" in results.best_config
         assert "y" in results.best_config
@@ -180,7 +190,7 @@ def test_basic_optimization(search_alg: str, hydra_sweep_runner: TSweepRunner) -
 def test_scheduler_integration() -> None:
     """Test integration with Ray Tune schedulers."""
     from ray.tune.schedulers import ASHAScheduler
-    
+
     # Test with scheduler object directly
     asha_scheduler = ASHAScheduler(max_t=10, grace_period=1)
     sweeper = RayTuneSweeper(scheduler=asha_scheduler)

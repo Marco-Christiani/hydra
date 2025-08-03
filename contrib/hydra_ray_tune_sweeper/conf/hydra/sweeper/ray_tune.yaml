@@ -24,7 +24,7 @@ resources_per_trial:
 metric: null
 mode: "min"
 
-local_dir: null
+local_dir: ???
 experiment_name: null
 
 params: {}
