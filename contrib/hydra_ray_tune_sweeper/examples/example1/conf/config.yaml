@@ -5,7 +5,7 @@ hydra:
   mode: MULTIRUN
   sweeper:
     num_samples: 100
-    # metric: objective
+    metric: objective
     mode: min
     params:
       x: interval(0,4)

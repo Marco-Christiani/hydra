@@ -6,6 +6,7 @@ Ray Tune's optimization algorithms with Hydra's configuration system.
 """
 
 import logging
+import pprint
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -14,12 +15,13 @@ from hydra.core.hydra_config import HydraConfig
 from hydra.core.override_parser.overrides_parser import OverridesParser
 from hydra.core.plugins import Plugins
 from hydra.core.singleton import Singleton
-from hydra.core.utils import JobReturn, JobStatus, run_job, setup_globals
+from hydra.core.utils import JobStatus, run_job, setup_globals
 from hydra.errors import HydraException
 from hydra.plugins.sweeper import Sweeper
 from hydra.types import HydraContext, TaskFunction
 from omegaconf import DictConfig, OmegaConf, open_dict
 from ray import tune
+from ray.tune import RunConfig
 from ray.tune.schedulers import TrialScheduler
 from ray.tune.search import SearchAlgorithm
 
@@ -46,17 +48,18 @@ class RayTuneSweeper(Sweeper):
         timeout: Optional[float] = None,
         search_alg: Optional[SearchAlgorithm] = None,
         scheduler: Optional[TrialScheduler] = None,
+        run_config: Optional[RunConfig] = None,
         ray_config: Optional[Dict[str, Any]] = None,
         resume: Union[bool, str] = False,
-        max_failures: int = 0,
-        fail_fast: bool = False,
+        # max_failures: int = 0,
+        # fail_fast: bool = False,
         resources_per_trial: Optional[Dict[str, Union[int, float]]] = None,
-        metric: Optional[str] = None,
+        metric: str = None,
         mode: str = "min",
-        local_dir: Optional[str] = None,
-        experiment_name: Optional[str] = None,
+        # local_dir: Optional[str] = None,
+        # experiment_name: Optional[str] = None,
         params: Optional[Dict[str, str]] = None,
-        stop: Optional[Dict[str, Any]] = None,
+        # stop: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -66,17 +69,18 @@ class RayTuneSweeper(Sweeper):
         self.timeout = timeout
         self.search_alg = search_alg
         self.scheduler = scheduler
+        self.run_config = run_config
         self.ray_config = ray_config or {}
         self.resume = resume
-        self.max_failures = max_failures
-        self.fail_fast = fail_fast
+        # self.max_failures = max_failures
+        # self.fail_fast = fail_fast
         self.resources_per_trial = resources_per_trial or {"cpu": 1, "gpu": 0}
         self.metric = metric
         self.mode = mode
-        self.local_dir = local_dir
-        self.experiment_name = experiment_name
+        # self.local_dir = local_dir
+        # self.experiment_name = experiment_name
         self.params = params or {}
-        self.stop = stop
+        # self.stop = stop
 
         # Standard Hydra sweeper attributes
         self.config: Optional[DictConfig] = None
@@ -171,7 +175,9 @@ class RayTuneSweeper(Sweeper):
         if sweep_dir_value is None or str(sweep_dir_value) == "None":
             # Check if there's a sweep directory in the overrides
             for override in self.config.hydra.overrides.hydra:
-                if override.startswith("hydra.sweep.dir=") and not override.endswith("=None"):
+                if override.startswith("hydra.sweep.dir=") and not (
+                    override.endswith("=None") or override.endswith("=null") or override.endswith("=0")
+                ):
                     # Extract the directory path from the override
                     sweep_dir_value = override.split("=", 1)[1]
                     log.debug(f"Found sweep dir in overrides: {sweep_dir_value}")
@@ -203,26 +209,7 @@ class RayTuneSweeper(Sweeper):
         # Track job index for proper hydra.job.num assignment
         self._job_idx = 0
 
-        # Use Ray Tune's built-in function API with Hydra task execution
-        def objective(config: Dict[str, Any]) -> Dict[str, Any]:
-            """Objective function that runs Hydra task with given config."""
-            return self._run_hydra_task_directly(config)
-
-        # Use the sweep directory that we just created and verified
-        # But handle the case where self.local_dir is preferred
-        storage_path = self.local_dir or str(sweep_dir.absolute())
-
         # Configure and run Ray Tune experiment
-        run_config = tune.RunConfig(
-            name=self.experiment_name or "hydra_ray_tune_sweep",
-            storage_path=storage_path,
-            failure_config=tune.FailureConfig(
-                max_failures=self.max_failures,
-                fail_fast=self.fail_fast,
-            ),
-            stop=self.stop,
-        )
-
         tune_config = tune.TuneConfig(
             num_samples=self.num_samples,
             max_concurrent_trials=self.max_concurrent_trials,
@@ -234,10 +221,10 @@ class RayTuneSweeper(Sweeper):
         )
 
         tuner = tune.Tuner(
-            objective,
+            trainable=self._run_hydra_task_directly,
             param_space=search_space,
             tune_config=tune_config,
-            run_config=run_config,
+            run_config=self.run_config,
         )
 
         try:
@@ -298,32 +285,25 @@ class RayTuneSweeper(Sweeper):
                     raise RuntimeError(f"Task failed with return value: {ret.return_value}")
 
             # Extract metrics from return value
-            return self._extract_metrics(ret.return_value)
+            metrics = ret.return_value
+            if not isinstance(metrics, dict):
+                raise RuntimeError(
+                    "Task function must return a dictionary of metrics with at least an entry for the objective"
+                    f" metric. Got {type(metrics)}"
+                )
+            elif self.metric not in metrics:
+                raise RuntimeError(
+                    "Task function must return a dictionary of metrics with at least an entry for the objective"
+                    f" metric but {self.metric} was not in the returned dictionary. Got %s",
+                    pprint.pformat(metrics),
+                )
+            log.warning("Task extracted metrics: %s", metrics)
+            tune.report(metrics=metrics)
+            return metrics
 
         except Exception as e:
             log.error(f"Trial {self._job_idx - 1} failed with error: {e}")
             raise
-
-    def _extract_metrics(self, return_value: Any) -> Dict[str, float]:
-        """Extract metrics from task return value for Ray Tune."""
-        if isinstance(return_value, dict):
-            # Filter to numeric values only
-            metrics = {}
-            for k, v in return_value.items():
-                if isinstance(v, (int, float)):
-                    metrics[k] = float(v)
-            return metrics
-        elif isinstance(return_value, (int, float)):
-            return {"objective": float(return_value)}
-        elif return_value is None:
-            return {"objective": 0.0}
-        else:
-            # Try to convert to float, fallback to 0
-            try:
-                return {"objective": float(return_value)}
-            except (ValueError, TypeError):
-                log.warning(f"Cannot convert return value to metric: {return_value}")
-                return {"objective": 0.0}
 
     def _parse_config(self) -> List[str]:
         """Parse sweeper parameter configuration."""
@@ -336,19 +316,10 @@ class RayTuneSweeper(Sweeper):
         """Save optimization results following Hydra patterns."""
         try:
             # Get best result
-            if self.metric:
-                best_result = results.get_best_result(metric=self.metric, mode=self.mode)
-                best_config = best_result.config
-                best_metrics = best_result.metrics
-            else:
-                # Use first result if no metric specified
-                results_df = results.get_dataframe()
-                if len(results_df) > 0:
-                    best_config = results_df.iloc[0].to_dict()
-                    best_metrics = {}
-                else:
-                    log.warning("No results found")
-                    return
+            log.warning("Getting best result for metric: %s (mode: %s)", self.metric, self.mode)
+            best_result = results.get_best_result(metric=self.metric, mode=self.mode)
+            best_config = best_result.config
+            best_metrics = best_result.metrics
 
             results_to_serialize = {
                 "name": "ray_tune",

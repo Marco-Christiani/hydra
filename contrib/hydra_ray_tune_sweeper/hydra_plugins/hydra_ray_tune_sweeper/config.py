@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
+from ray import data
 
 
 @dataclass
@@ -97,7 +98,10 @@ class MedianStoppingConfig(TrialSchedulerConfig):
 
 @dataclass
 class PopulationBasedTrainingConfig(TrialSchedulerConfig):
-    """Population Based Training scheduler configuration."""
+    """Population Based Training scheduler configuration.
+
+    See https://docs.ray.io/en/latest/tune/api/doc/ray.tune.schedulers.PopulationBasedTraining.html#ray.tune.schedulers.PopulationBasedTraining
+    """
 
     _target_: str = "ray.tune.schedulers.PopulationBasedTraining"
     metric: Optional[str] = None
@@ -109,6 +113,16 @@ class PopulationBasedTrainingConfig(TrialSchedulerConfig):
     quantile_fraction: float = 0.25
     resample_probability: float = 0.25
     custom_explore_fn: Optional[str] = None
+
+
+@dataclass
+class RunConfig:
+    """Ray Tune RunConfig.
+
+    See https://docs.ray.io/en/latest/tune/api/doc/ray.tune.RunConfig.html#ray.tune.RunConfig
+    """
+
+    _target_: str = "ray.tune.RunConfig"
 
 
 @dataclass
@@ -135,31 +149,33 @@ class RayTuneSweeperConf:
     # Ray configuration
     ray_config: Dict[str, Any] = field(default_factory=dict)
 
+    run_config: Optional[RunConfig] = None
+
     # Checkpointing and resumption
     resume: Union[bool, str] = False
     checkpoint_freq: int = 0
     checkpoint_at_end: bool = False
 
     # Failure handling
-    max_failures: int = 0
-    fail_fast: bool = False
+    # max_failures: int = 0
+    # fail_fast: bool = False
 
     # Resource specification per trial
     resources_per_trial: Dict[str, Union[int, float]] = field(default_factory=lambda: {"cpu": 1, "gpu": 0})
 
     # Metric configuration
-    metric: Optional[str] = None
+    metric: str = "objective"
     mode: str = "min"
 
     # Output configuration
-    local_dir: Optional[str] = None
-    experiment_name: Optional[str] = None
+    # local_dir: Optional[str] = None
+    # experiment_name: Optional[str] = None
 
     # Hydra-specific configuration
     params: Optional[Dict[str, str]] = None
 
     # Trial stop condition
-    stop: Optional[Dict[str, Any]] = None
+    # stop: Optional[Dict[str, Any]] = None
 
 
 # Register configurations

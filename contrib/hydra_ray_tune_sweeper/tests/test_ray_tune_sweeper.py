@@ -120,17 +120,18 @@ def test_launcher_compatibility_validation() -> None:
     sweeper._validate_plugin_compatibility(no_launcher_config)
 
 
-def simple_optimization_task(cfg: DictConfig) -> float:
+def simple_optimization_task(cfg: DictConfig) -> Dict[str, float]:
     """Simple function for testing optimization."""
     x = cfg.x
     y = cfg.y
-    return x**2 + y**2
+    return {"objective": x**2 + y**2}
 
 
 # @pytest.mark.parametrize("search_alg", ["random", "hyperopt"])
 @pytest.mark.parametrize("search_alg", ["random"])
 def test_launch(search_alg: str, hydra_sweep_runner: TSweepRunner) -> None:
     """Test basic optimization with different search algorithms."""
+    from examples.example1.main import main as example1_main
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         overrides = [
@@ -141,7 +142,7 @@ def test_launch(search_alg: str, hydra_sweep_runner: TSweepRunner) -> None:
             "hydra.sweeper.num_samples=5",
             # "hydra.sweeper.metric=objective",
             "hydra.sweeper.mode=min",
-            "hydra.sweeper.metric=null",
+            "hydra.sweeper.metric=objective",
             "x=int(interval(0,4))",
             "y=int(interval(0,2))",
         ]
@@ -149,16 +150,10 @@ def test_launch(search_alg: str, hydra_sweep_runner: TSweepRunner) -> None:
         __import__("pprint").pprint(overrides)
         print("+" * 100)
         sweep = hydra_sweep_runner(
-            calling_file="examples/main.py",
-            # calling_file=None,
+            calling_file="examples/example1/main.py",
             calling_module=None,
-            # calling_module="hydra.test_utils.a_module",
-            # calling_module="hydra_ray_tune_sweeper.tests.a_module",
-            # calling_module="hydra_plugins.hydra_ray_tune_sweeper.tests.a_module",
-            task_function=simple_optimization_task,
-            # task_function=None,
-            # config_path="configs",
-            # config_name="compose.yaml",
+            # task_function=simple_optimization_task,
+            task_function=example1_main,
             config_path="conf",
             config_name="config.yaml",
             overrides=overrides,
@@ -168,20 +163,11 @@ def test_launch(search_alg: str, hydra_sweep_runner: TSweepRunner) -> None:
             assert sweep.returns is None  # Ray Tune manages execution
 
         # Check that results were saved
-        # Since we arent optimizing anything we shouldnt see results
-        for x in Path(tmp_dir).glob("**/*.yaml"):
-            print(str(x))
         results_file = Path(tmp_dir) / "optimization_results.yaml"
         assert results_file.exists()
 
-        print(results_file.read_text())
-
         results = OmegaConf.load(results_file)
         assert results.name == "ray_tune"
-        print("Best Config".center(80, "-"))
-        print(type(results))
-        print(OmegaConf.to_yaml(results.best_config))
-        print(type(results.best_config))
         assert "best_config" in results
         assert "x" in results.best_config
         assert "y" in results.best_config
